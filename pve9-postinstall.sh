@@ -105,14 +105,20 @@ apt update
 apt -y dist-upgrade
 
 # ------------------------------------------------------- microcode et firmware
-step "Microcode et firmware"
-net=$(lspci -nn 2>/dev/null | grep -iE 'ethernet|network controller' || true)
-[[ -n $net ]] && cut -c1-100 <<<"$net" | sed 's/^/         /'
-pkgs=(amd64-microcode firmware-amd-graphics)
-grep -qi realtek <<<"$net" && pkgs+=(firmware-realtek)
-grep -qiE 'intel.*(wireless|wi-?fi)' <<<"$net" && pkgs+=(firmware-iwlwifi)
-ok "paquets retenus : ${pkgs[*]}"
-apt -y install "${pkgs[@]}"
+# NE JAMAIS installer les paquets firmware-* de Debian sur un hote Proxmox VE.
+# pve-firmware declare Conflicts ET Replaces sur firmware-amd-graphics,
+# firmware-iwlwifi, firmware-realtek et une vingtaine d'autres. apt resout le
+# conflit en retirant pve-firmware, ce qui entraine proxmox-default-kernel puis
+# proxmox-ve : le pve-apt-hook officiel avorte alors toute la transaction.
+# Le Replaces dit l'essentiel : ces blobs sont deja fournis par pve-firmware,
+# donc il n'y a rien a installer. amd64-microcode, lui, n'est pas en conflit.
+step "Microcode"
+if dpkg -s pve-firmware &>/dev/null; then
+  ok "pve-firmware present : blobs GPU / Wi-Fi / Ethernet deja fournis"
+else
+  warn "pve-firmware absent - installation Proxmox inhabituelle, a verifier a la main"
+fi
+apt -y install amd64-microcode
 
 # --------------------------------------------------------------------- le nag
 # En dernier : proxmoxlib.js appartient a proxmox-widget-toolkit et index.html.tpl

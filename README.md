@@ -1,127 +1,23 @@
-# post-pve-install.sh — fork durci
+# Post-install Proxmox VE 9 — T-BAO R3 Pro
 
-Fork de [`tools/pve/post-pve-install.sh`](https://github.com/community-scripts/ProxmoxVE/blob/main/tools/pve/post-pve-install.sh)
-du projet **community-scripts/ProxmoxVE**, épinglé sur le commit
-[`fb1d670`](https://github.com/community-scripts/ProxmoxVE/commit/fb1d670158ba68a41397ce4f21c3b6444c1a76d4)
-(2026-08-06, md5 `cb32f577bc9aeb730e447faa74e52732`, 698 lignes).
+Script de post-installation pour un hôte **Proxmox VE 9** personnel : nœud unique, sans souscription,
+sans Ceph. Non-interactif, idempotent, et il ne supprime jamais rien.
 
-Objectif : pouvoir **lancer le script sans crainte** sur un hôte Proxmox VE personnel — donc pas de code
-distant exécuté en root, pas de hook APT permanent, et une divergence assez faible pour être relue en
-entier d'un coup d'œil.
+Machine cible : T-BAO R3 Pro — Ryzen 7 5700U (iGPU Vega), 32 Go, SSD 1 To, 2× 2.5 GbE.
 
-Ce dépôt contient deux scripts :
+Le point de départ était [`tools/pve/post-pve-install.sh`](https://github.com/community-scripts/ProxmoxVE/blob/main/tools/pve/post-pve-install.sh)
+de **community-scripts/ProxmoxVE**, dont l'original verbatim est conservé dans [`upstream/`](upstream/)
+— voir [Pourquoi ne pas utiliser le script communautaire tel quel](#pourquoi-ne-pas-utiliser-le-script-communautaire-tel-quel).
 
 | Fichier | Rôle |
 |---|---|
-| `post-pve-install.sh` | Le fork fidèle à l'amont : interactif, portable PVE 8.x/9.x, ~700 lignes. La référence auditable. |
-| `pve9-postinstall.sh` | Équivalent de « oui à tout » pour **cette** machine, sans UI, avec journal de console. L'outil du quotidien. Voir [Script non-interactif](#script-non-interactif). |
-
-## Vérifier ce fork
-
-`upstream/` contient les originaux **verbatim** et n'est jamais modifié. La revue se fait par diff :
-
-```bash
-diff -u upstream/post-pve-install.sh post-pve-install.sh
-```
-
-7 hunks, **17 lignes de code retirées et 33 ajoutées** (dont 19 pour deux fonctions autonomes ajoutées).
-Tout le reste n'est que du commentaire. Chaque divergence porte un marqueur `FORK:` :
-
-```bash
-grep -n 'FORK' post-pve-install.sh          # 14 occurrences
-grep -nE 'curl|wget|api\.func' post-pve-install.sh   # uniquement dans les commentaires
-bash -n post-pve-install.sh                 # contrôle de syntaxe
-```
-
-L'historique git est le changelog : un commit par modification, avec sa justification.
-
-```bash
-git log --oneline
-git log -p -- post-pve-install.sh
-```
-
-## Les 7 modifications
-
-| # | Modification | Pourquoi |
-|---|---|---|
-| **M1** | Suppression du `source <(curl …/misc/api.func)` et de `init_tool_telemetry` | Exécutait ~1 200 lignes de code distant **non épinglé** en root à chaque lancement, et posait un `trap … EXIT`. L'envoi vers `telemetry.community-scripts.org` était déjà opt-in (`DIAGNOSTICS=yes`, absent d'une install neuve) — c'est le `source` distant qui posait problème, pas la télémétrie. Aucun autre appelant : suppression pure. |
-| **M2** | Le nag est patché explicitement, plus de hook `DPkg::Post-Invoke` | Amont écrivait `/etc/apt/apt.conf.d/no-nag-script`, qui réexécutait le patch après **chaque** opération dpkg, indéfiniment. Voir le piège d'ordonnancement ci-dessous. |
-| **M3** | `preflight()` : root / `pveversion` / `whiptail` | L'original supposait ces conditions et échouait obscurément sinon (permission-denied en plein milieu de la réécriture de `/etc/apt`). Aucun changement de comportement une fois remplies. |
-| **M4** | `non-free-firmware` ajouté aux `Components` du deb822 généré | PVE 9 livre `main non-free-firmware` par défaut ; amont écrivait `main contrib`, perdant `amd64-microcode` et les paquets `firmware-*`. Filet de sécurité : cette branche ne s'exécute que si aucun `*.sources` n'existe. |
-| **M5** | Détection du dépôt Ceph par URI au lieu du nom de composant | **Bug amont** : `\bno-subscription\b` matche aussi `pve-no-subscription` (le `-` est une frontière de mot). Comme `proxmox.sources` est créé plus haut dans la même exécution, la question Ceph était **toujours** sautée, avec un message faussement rassurant. |
-| **M6** | `_fork_on_exit` : message clair sur ESC/Annuler | Les 20 prompts sont des `CHOICE=$(whiptail …)` ; ESC renvoie ≠ 0 et sous `set -e` tuait le script en silence, sans indiquer ce qui avait déjà été appliqué. Le handler ne fait qu'afficher. |
-| **M7** | En-tête `FORK NOTICE`, `upstream/`, `LICENSE`, ce README | Traçabilité. Copyright MIT et attribution `tteck | MickLesk (CanbiZ)` conservés. |
-
-### Le piège d'ordonnancement du nag (M2)
-
-Retirer le hook n'est pas une simple suppression. Dans l'original,
-`apt --reinstall install proxmox-widget-toolkit` est exécuté **inconditionnellement** juste après la
-branche nag, et restaure le `proxmoxlib.js` d'origine. C'est le hook `DPkg::Post-Invoke` qui re-patchait
-derrière. Supprimer le hook seul aurait donc silencieusement fait revenir le bandeau.
-
-Le fork appelle donc `/usr/local/bin/pve-remove-nag.sh` **après** le réinstall. Le script lui-même est
-inchangé et idempotent (il teste `NoMoreNagging` et le marqueur mobile avant d'écrire).
-
-**Contrepartie assumée** : sans hook, une mise à jour future de `proxmox-widget-toolkit` fera revenir le
-bandeau. C'était le prix demandé pour ne pas laisser de hook APT permanent. Pour le remettre :
-
-```bash
-/usr/local/bin/pve-remove-nag.sh     # idempotent, relançable à volonté
-# puis Ctrl+Shift+R dans le navigateur
-```
+| `pve9-postinstall.sh` | Le script. 161 lignes, dont ~20 de JS pour l'UI mobile et ~25 de journalisation. |
+| `upstream/post-pve-install.sh` | L'amont verbatim, épinglé sur [`fb1d670`](https://github.com/community-scripts/ProxmoxVE/commit/fb1d670158ba68a41397ce4f21c3b6444c1a76d4) (2026-08-06, md5 `cb32f577bc9aeb730e447faa74e52732`). Jamais exécuté, sert de référence. |
+| `upstream/api.func` | Le module de télémétrie de l'amont, archivé pour audit. Jamais exécuté. |
 
 ## Utilisation
 
-**Ne pas** faire `curl … | bash` — cela annule tout l'intérêt de la démarche.
-
-```bash
-# sauvegarde préalable (couvre les branches sans backup, voir Limites connues)
-tar czf /root/etc-apt-$(date +%F).tgz /etc/apt
-
-# depuis le poste de travail
-scp post-pve-install.sh root@<pve>:/root/
-
-# sur l'hôte
-bash /root/post-pve-install.sh
-```
-
-Versions supportées (inchangé vs amont) : **PVE 8.0–8.9** et **9.0–9.2**.
-
-## Idempotence
-
-Le script est relançable. Ce qui l'était déjà en amont : tous les `cat > fichier` (contenu fixe),
-`pve-remove-nag.sh` (gardes `grep`), `systemctl enable/disable --now`, la branche « legacy sources » 9.x,
-l'ajout de `Enabled: false`. Ce que le fork ajoute : `rm -f` sur le hook (au lieu de `[[ -f ]] && rm`),
-et l'appel au patch nag conditionné à la réponse.
-
-Contrôles après un passage — les compteurs doivent rester à `1` après un second lancement :
-
-```bash
-test ! -e /etc/apt/apt.conf.d/no-nag-script && echo "aucun hook APT: OK"
-grep -c NoMoreNagging /usr/share/javascript/proxmox-widget-toolkit/proxmoxlib.js   # 1
-grep -c 'MANAGED BLOCK FOR MOBILE NAG' /usr/share/pve-yew-mobile-gui/index.html.tpl # 1
-systemctl is-enabled pve-ha-lrm pve-ha-crm     # disabled
-apt update                                      # aucun avertissement
-```
-
-## Limites connues (non corrigées — hors périmètre « divergence minimale »)
-
-- **`cat > /etc/apt/sources.list` sans sauvegarde** (branche 8.x) et
-  **`rm -f /etc/apt/sources.list.d/*.list`** (branche 9.x). La branche 9.x concernée est sautée dès qu'un
-  `*.sources` existe, donc inatteignable sur une PVE 9 fraîche. Mitigé par le `tar` préalable ci-dessus.
-- **`echo "Enabled: false" >> fichier`** : dans un `.sources` multi-strophes, l'ajout se rattache à la
-  dernière strophe, pas forcément à celle qui a matché. Inoffensif sur les fichiers mono-strophe générés
-  par Proxmox.
-- **`grep … /etc/apt/sources.list.d/*.sources` avec `nullglob`** (helper `component_exists_in_sources`,
-  bloc ceph-enterprise) : si aucun `.sources` n'existe, le glob disparaît et `grep` lit stdin → blocage
-  possible. Non atteignable sur PVE 9. La ligne du M5 utilise l'idiome robuste `… *.sources /dev/null`.
-- **Branche 8.x** laissée telle quelle : la cible ici est PVE 9. Le M4 n'y est pas appliqué.
-
-## Script non-interactif
-
-`pve9-postinstall.sh` applique directement l'équivalent de « oui à tout », sur les specs réelles de la
-machine : **PVE 9 (trixie), nœud unique, pas de souscription, pas de Ceph**. Pas de whiptail. 161 lignes,
-dont ~20 de JS pour l'UI mobile et ~25 de journalisation.
+**Ne pas** faire `curl … | bash`. On copie le fichier et on le lance.
 
 ```bash
 tar czf /root/etc-apt-$(date +%F).tgz /etc/apt     # sauvegarde
@@ -129,10 +25,20 @@ scp pve9-postinstall.sh root@<pve>:/root/
 bash /root/pve9-postinstall.sh
 ```
 
-Il fait 7 choses : désactive les dépôts `enterprise.proxmox.com` (`pve-enterprise.sources` **et**
-`ceph.sources`, en une boucle), écrit `pve-no-subscription`, garantit `contrib` + `non-free-firmware` sur
-`debian.sources`, désactive HA et Corosync, met à jour, installe le microcode et les firmwares **détectés
-via `lspci`**, puis retire le nag sur les deux UI. Il finit par un rappel — **pas** de reboot automatique.
+## Ce qu'il fait
+
+Sept actions, dans cet ordre :
+
+1. Désactive les dépôts réservés aux abonnés — `pve-enterprise.sources` **et** `ceph.sources`, tous deux
+   sur `enterprise.proxmox.com` sur une PVE 9 fraîche, donc traités par une seule boucle.
+2. Écrit `proxmox.sources` avec `pve-no-subscription`.
+3. Garantit `contrib` **et** `non-free-firmware` sur chaque ligne `Components:` de `debian.sources`.
+4. Désactive HA et Corosync (nœud unique).
+5. `apt update` puis `apt -y dist-upgrade`.
+6. Installe le microcode et les firmwares **détectés via `lspci`**.
+7. Retire le bandeau de souscription sur les deux UI, desktop et mobile.
+
+Il finit par un rappel. **Pas de reboot automatique.**
 
 ### Journal de console
 
@@ -145,59 +51,130 @@ Chaque étape annonce ce qu'elle fait et distingue trois états, pour qu'un seco
     !!   1 fichier(s) .list legacy, NON touches - a revoir a la main :
 ```
 
-`ok` = action appliquée, `--` = déjà en état, `!!` = avertissement (sur stderr). Un `trap ... ERR` signale
-la ligne fautive si le script s'arrête. Les couleurs se désactivent d'elles-mêmes hors terminal, donc
+`ok` = action appliquée, `--` = déjà en état, `!!` = avertissement (sur stderr). Un `trap … ERR` signale la
+ligne fautive si le script s'arrête. Les couleurs se désactivent hors terminal, donc
 `bash pve9-postinstall.sh | tee post.log` reste propre.
 
 ### Garde-fous
 
 - **`VERSION_CODENAME=trixie` exigé.** Le script écrit `Suites: trixie` en dur ; l'exécuter sur un hôte
   bookworm/PVE 8 basculerait les dépôts de base et enchaînerait une montée de version non supportée.
-- **Rien de destructif.** Aucun `rm`. Les `.list` legacy sont **signalés, pas supprimés** — c'est encore le
-  format de Docker, Tailscale et de plusieurs scripts communautaires. `/etc/apt/sources.list` est commenté
-  avec un `.bak` créé par `cp -n`, donc un second passage n'écrase pas la sauvegarde d'origine.
-- **Le patch du nag est vérifié après application.** Si le motif `data.status` est introuvable (format amont
-  modifié), le script avertit au lieu d'annoncer un succès. Voir la fragilité décrite ci-dessous.
-- **Une unité systemd absente n'interrompt pas le script** : elle est signalée et le reste s'applique.
+- **Rien de destructif. Aucun `rm`, et jamais d'`apt autoremove`** (voir plus bas pourquoi c'est la
+  commande qui compte). Les `.list` legacy sont **signalés, pas supprimés** — c'est encore le format de
+  Docker, Tailscale et de plusieurs scripts communautaires. `/etc/apt/sources.list` est commenté avec un
+  `.bak` créé par `cp -n`, donc un second passage n'écrase pas la sauvegarde d'origine.
+- **Le patch du nag est vérifié après application.** Si le motif `data.status` est introuvable (format
+  amont modifié), le script avertit au lieu d'annoncer un succès.
+- **Une unité systemd absente n'interrompt pas le script** : elle est signalée, le reste s'applique.
 - **`lspci` décide des firmwares** plutôt qu'une supposition : `firmware-realtek` et `firmware-iwlwifi` ne
   sont ajoutés que si le contrôleur correspondant est présent.
 
+## Relancer le script
+
+Il est conçu pour être **ta commande de mise à jour**, à la place d'`apt dist-upgrade` : tu récupères au
+passage la remise en état des dépôts, de HA et du bandeau, ce qu'un simple `apt` ne fait pas.
+
+- S'il n'y a rien à faire, il ne fait rien (tout en `--`).
+- S'il y a des mises à jour, il les applique **puis** re-supprime le bandeau, dans le même passage.
+
+Deux réserves à connaître :
+
+- **`proxmox.sources` est réécrit sans condition** (contenu identique, donc sans effet). Ne le modifie pas
+  à la main : un prochain passage l'écraserait. Pour un miroir local, change le script.
+- Si `apt` échoue, `set -e` arrête tout et **le patch du nag ne s'exécute pas** ce coup-ci. Le `!!` te le dit.
+
+### Le bandeau revient régulièrement, c'est normal
+
+`proxmoxlib.js` appartient à `proxmox-widget-toolkit` et `index.html.tpl` à `pve-yew-mobile-gui` : toute
+mise à jour de ces paquets écrase le patch. D'après le changelog amont, `proxmox-widget-toolkit` sort
+**~1,7 version par mois** (13 en 2026 à mi-août, 21 en 2025) — donc le bandeau réapparaît en pratique à
+presque chaque cycle de mise à jour.
+
+C'est un choix assumé : **aucun hook APT n'est posé.** Relancer le script suffit. Si tu veux seulement
+faire sauter le bandeau sans rien mettre à jour ni redémarrer de service :
+
+```bash
+W=/usr/share/javascript/proxmox-widget-toolkit/proxmoxlib.js
+grep -q NoMoreNagging "$W" || sed -i -e '/data\.status/ s/!//' -e '/data\.status/ s/active/NoMoreNagging/' "$W"
+# puis Ctrl+Shift+R dans le navigateur
+```
+
+### À propos de `dist-upgrade`
+
+`apt full-upgrade` (= `dist-upgrade`) est la commande **officiellement recommandée** par Proxmox, qui met
+explicitement en garde contre `apt upgrade` : ce dernier ne sait pas supprimer un paquet pour résoudre une
+dépendance et peut laisser « un état de paquets partiellement mis à jour ou cassé ».
+
+Les suppressions de paquets pendant un `full-upgrade` sont donc le mécanisme normal (paquets
+transitionnels, renommages, métapaquets obsolètes). Le seul cas catastrophique — apt proposant de
+supprimer `proxmox-ve` parce que le dépôt PVE ne fournit rien — est **déjà couvert par Proxmox** :
+`proxmox-ve` installe `/etc/apt/apt.conf.d/10pveapthook`, qui branche
+`/usr/share/proxmox-ve/pve-apt-hook` en `DPkg::Pre-Install-Pkgs`. Ce hook avorte toute la transaction si
+`proxmox-ve` ou le noyau épinglé apparaît en `**REMOVE**`, et exige un `touch /please-remove-proxmox-ve`
+explicite pour passer outre. Rien à ajouter de notre côté.
+
+En revanche, `full-upgrade` **laisse les anciens noyaux installés** : ton entrée GRUB de secours existe par
+défaut. C'est `apt autoremove` qui les retire — donc c'est `autoremove` qui peut supprimer ton filet de
+sécurité, pas `full-upgrade`. Le script ne l'appelle jamais.
+
+Sur ce boîtier il n'y a **ni IPMI ni carte de gestion** : si un noyau ne démarre pas, choisir l'ancienne
+entrée GRUB demande un écran HDMI et un clavier. C'est la vraie exposition, et elle est indépendante du
+script.
+
+## Pourquoi ne pas utiliser le script communautaire tel quel
+
+Trois constats sur l'amont, tous vérifiables contre [`upstream/`](upstream/). Ils justifient les choix de
+conception ci-dessus.
+
+**1. Du code distant exécuté en root à chaque lancement.** L'amont fait
+`source <(curl -fsSL …/misc/api.func)` puis `init_tool_telemetry`, soit ~1 200 lignes de code non épinglé
+chargées depuis le réseau, plus un `trap … EXIT`. L'envoi vers `telemetry.community-scripts.org` est en
+réalité **opt-in** — `_tm_enabled()` sort immédiatement sauf si `DIAGNOSTICS=yes` dans
+`/usr/local/community-scripts/diagnostics`, absent d'une install neuve. Le problème n'était donc pas la
+télémétrie mais le `source` distant.
+
+**2. Un hook APT permanent, et un piège d'ordonnancement.** L'amont écrit
+`/etc/apt/apt.conf.d/no-nag-script`, un `DPkg::Post-Invoke` qui réexécute le patch après **chaque**
+opération dpkg, indéfiniment. Le retirer n'est pas une simple suppression : l'amont lance
+`apt --reinstall install proxmox-widget-toolkit` **inconditionnellement** juste après la branche nag, ce
+qui restaure le `proxmoxlib.js` d'origine — et c'est le hook qui re-patchait derrière. Supprimer le hook
+seul aurait silencieusement fait revenir le bandeau. D'où l'ordre imposé ici : le patch en dernier, après
+le `dist-upgrade`.
+
+**3. Un faux positif qui saute une question.** `component_exists_in_sources "no-subscription"` construit
+la regex `\bno-subscription\b` ; `-` étant une frontière de mot, elle matche aussi `pve-no-subscription`.
+Comme `proxmox.sources` est créé quelques étapes plus haut dans la même exécution, la question Ceph était
+**toujours** sautée, avec le message faussement rassurant « already exists (skipped) ».
+
 ### Ce qui a été écarté par rapport à « oui à tout »
 
-| Étape de l'original | Pourquoi écartée |
+| Étape de l'amont | Pourquoi écartée |
 |---|---|
 | Migration deb822 des sources | La branche est sautée dès qu'un `*.sources` existe — le cas sur une PVE 9 fraîche. Zéro effet. |
 | Dépôt Ceph no-subscription | Nœud unique sans Ceph : un dépôt de plus à interroger à chaque `apt update`, pour rien. |
-| Dépôt `pve-test` | L'original l'ajoute avec `Enabled: false` : un fichier sans aucun effet. |
+| Dépôt `pve-test` | L'amont l'ajoute avec `Enabled: false` : un fichier sans aucun effet. |
 | `apt --reinstall proxmox-widget-toolkit` | Ne servait qu'à déclencher le hook APT, ou à restaurer le fichier si on répondait « non ». En répondant « oui », c'est du travail annulé aussitôt. |
-| « Activer HA » puis « désactiver HA » | L'original demande les deux successivement ; sur un nœud unique on désactive, point. |
+| « Activer HA » puis « désactiver HA » | L'amont pose les deux questions à la suite ; sur un nœud unique on désactive, point. |
+| `rm -f /etc/apt/sources.list.d/*.list` | Destructif et sans sauvegarde. Ici les `.list` sont signalés, jamais supprimés. |
 
-### Ordre imposé
-
-Les patches du nag sont **les dernières actions**, après le `dist-upgrade` : `proxmoxlib.js` appartient à
-`proxmox-widget-toolkit` et `index.html.tpl` à `pve-yew-mobile-gui`, donc toute mise à jour de ces paquets
-annule le patch. C'est la même cause que le piège décrit plus haut pour le fork.
-
-### Limites
+## Limites
 
 - La boucle de désactivation suppose des `.sources` **mono-strophe** — le cas de ceux que livre Proxmox.
   Sur un fichier multi-strophes, `sed '/^Enabled:/d'` retirerait toutes les lignes `Enabled:`.
-- `trixie` et `pve-no-subscription` sont figés : script spécifique à PVE 9, par conception. Le fork reste
-  la version portable 8.x/9.x, d'où la garde `VERSION_CODENAME=trixie` en tête.
-- Les sélecteurs CSS du bloc mobile sont ceux de l'amont et dépendent du build de l'UI mobile PVE. Une
-  refonte de cette UI les invaliderait silencieusement : le bloc cesserait d'agir sans rien casser.
-- Le nag revient après une mise à jour de `proxmox-widget-toolkit` ou `pve-yew-mobile-gui` — relancer le
-  script, il est idempotent. C'est le prix choisi pour ne pas poser de hook APT.
+- `trixie` et `pve-no-subscription` sont figés : script spécifique à PVE 9, par conception. D'où la garde
+  `VERSION_CODENAME=trixie` en tête. Pour PVE 10, repartir de l'amont à jour.
 - **Le `sed` du nag dépend du retour à la ligne.** `s/!//` supprime le *premier* `!` de la ligne ; ça ne
   fonctionne que parce que Proxmox met `!res` et `res.data.status… !== 'active'` sur des lignes séparées.
   Si la condition était un jour reformatée sur une seule ligne, le `!` de `!res` serait mangé à la place et
   la condition deviendrait toujours vraie — le bandeau réapparaîtrait. Défaillance bénigne, et le contrôle
   post-patch l'affiche au lieu de la taire.
-- Écart volontaire vis-à-vis de l'amont : le `clearInterval` manquant a été ajouté. L'original coupe son
+- Les sélecteurs CSS du bloc mobile sont ceux de l'amont et dépendent du build de l'UI mobile PVE. Une
+  refonte de cette UI les invaliderait silencieusement : le bloc cesserait d'agir sans rien casser.
+- Écart volontaire vis-à-vis de l'amont : le `clearInterval` manquant a été ajouté. L'amont coupe son
   `MutationObserver` au bout de 10 s mais laisse tourner un `setInterval(…, 300)` indéfiniment dans le
   navigateur.
 
-### Idempotence — testée sur fixtures
+## Tests
 
 Le script est **exécuté en entier** hors hôte, pas seulement relu. Le harnais dérive une copie du vrai
 fichier en préfixant les 4 variables de chemin déclarées en tête (`D`, `SL`, `WEB_JS`, `MOBILE_TPL`) et
@@ -205,7 +182,7 @@ fournit des stubs pour `apt`, `systemctl`, `lspci` et `pveversion`. Un `diff` co
 diverge du script que sur ces chemins — toute la logique testée est celle qui tournera sur l'hôte.
 
 Fixtures : arborescence PVE 9 reconstituée, avec un extrait **réel** de `src/Utils.js` récupéré depuis
-`git.proxmox.com` comme `proxmoxlib.js`. Cas couverts :
+`git.proxmox.com` comme `proxmoxlib.js`.
 
 | Cas | Attendu | Résultat |
 |---|---|---|
@@ -219,20 +196,23 @@ Fixtures : arborescence PVE 9 reconstituée, avec un extrait **réel** de `src/U
 | Motif `data.status` introuvable | avertissement, pas de faux succès | conforme |
 | UI mobile absente | `--` propre, sans erreur | conforme |
 
-Non testable ici : le JS mobile lui-même (il dépend du DOM de l'UI mobile PVE) et le comportement réel
-d'`apt`/`systemctl`.
+Non testable hors hôte : le JS mobile lui-même (il dépend du DOM de l'UI mobile PVE) et le comportement
+réel d'`apt` et de `systemctl`.
 
-## À faire après le fork (spécifique à la machine)
-
-Inutile si tu as lancé `pve9-postinstall.sh`, qui s'en charge. Après le fork en revanche —
-T-BAO R3 Pro, Ryzen 7 5700U, iGPU Vega :
+## Contrôles sur l'hôte
 
 ```bash
-grep Components /etc/apt/sources.list.d/debian.sources   # doit contenir non-free-firmware
-apt install amd64-microcode firmware-amd-graphics
+test ! -e /etc/apt/apt.conf.d/no-nag-script && echo "aucun hook APT: OK"
+grep -c NoMoreNagging /usr/share/javascript/proxmox-widget-toolkit/proxmoxlib.js    # 1
+grep -c NoMoreNagging /usr/share/pve-yew-mobile-gui/index.html.tpl                  # 1
+grep Components /etc/apt/sources.list.d/debian.sources   # contrib + non-free-firmware
+systemctl is-enabled pve-ha-lrm pve-ha-crm corosync      # disabled
+apt update                                               # aucun depot enterprise interroge
+df -h /boot ; proxmox-boot-tool kernel list              # espace et noyaux disponibles
 ```
 
 ## Licence
 
-MIT, conservée depuis l'amont — voir [`LICENSE`](LICENSE). Crédit : tteck / tteckster, MickLesk (CanbiZ)
-et la communauté community-scripts.
+MIT, conservée depuis l'amont — voir [`LICENSE`](LICENSE). `pve9-postinstall.sh` contient du code dérivé
+du script communautaire (le `sed` du nag, le bloc JS mobile), donc l'attribution reste due même sans le
+fork. Crédit : tteck / tteckster, MickLesk (CanbiZ) et la communauté community-scripts.
