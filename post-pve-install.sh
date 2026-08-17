@@ -545,13 +545,16 @@ EOF
 }
 
 post_routines_common() {
-  CHOICE=$(whiptail --backtitle "Proxmox VE Helper Scripts" --title "SUBSCRIPTION NAG" --menu "This will disable the nag message reminding you to purchase a subscription every time you log in to the web interface.\n \nDisable subscription nag?" 14 58 2 \
+  # FORK: answer kept in its own variable. CHOICE is reused by the prompts further
+  # down, and the nag patch now has to be applied after the widget-toolkit
+  # reinstall rather than by an APT hook.
+  NAG_CHOICE=$(whiptail --backtitle "Proxmox VE Helper Scripts" --title "SUBSCRIPTION NAG" --menu "This will disable the nag message reminding you to purchase a subscription every time you log in to the web interface.\n \nDisable subscription nag?" 14 58 2 \
     "yes" " " \
     "no" " " 3>&2 2>&1 1>&3)
-  case $CHOICE in
+  case $NAG_CHOICE in
   yes)
     whiptail --backtitle "Proxmox VE Helper Scripts" --msgbox --title "Support Subscriptions" "Supporting the software's development team is essential. Check their official website's Support Subscriptions for pricing. Without their dedicated work, we wouldn't have this exceptional software." 10 58
-    msg_info "Disabling subscription nag"
+    msg_info "Installing subscription nag patch script"
     # Create external script, this is needed because DPkg::Post-Invoke is fidly with quote interpretation
     mkdir -p /usr/local/bin
     cat >/usr/local/bin/pve-remove-nag.sh <<'EOF'
@@ -603,20 +606,35 @@ fi
 EOF
     chmod 755 /usr/local/bin/pve-remove-nag.sh
 
-    cat >/etc/apt/apt.conf.d/no-nag-script <<'EOF'
-DPkg::Post-Invoke { "/usr/local/bin/pve-remove-nag.sh"; };
-EOF
-    chmod 644 /etc/apt/apt.conf.d/no-nag-script
+    # FORK: no DPkg::Post-Invoke hook is installed. Upstream registered
+    # pve-remove-nag.sh in /etc/apt/apt.conf.d/no-nag-script so it re-ran after
+    # every single dpkg operation; that is a permanent, invisible hook patching a
+    # packaged file behind your back. Here the patch is applied once, explicitly,
+    # below. Also clears a hook left behind by a previous upstream run.
+    rm -f /etc/apt/apt.conf.d/no-nag-script
 
-    msg_ok "Disabled subscription nag (Delete browser cache)"
+    msg_ok "Installed subscription nag patch script (no APT hook)"
     ;;
   no)
     whiptail --backtitle "Proxmox VE Helper Scripts" --msgbox --title "Support Subscriptions" "Supporting the software's development team is essential. Check their official website's Support Subscriptions for pricing. Without their dedicated work, we wouldn't have this exceptional software." 10 58
     msg_error "Selected no to Disabling subscription nag"
-    [[ -f /etc/apt/apt.conf.d/no-nag-script ]] && rm /etc/apt/apt.conf.d/no-nag-script
+    rm -f /etc/apt/apt.conf.d/no-nag-script # FORK: -f, so a second run is a no-op
     ;;
   esac
-  apt --reinstall install proxmox-widget-toolkit &>/dev/null || msg_error "Widget toolkit reinstall failed"
+  # FORK: -y added. Upstream ran this with stdout+stderr sent to /dev/null, so an
+  # apt confirmation prompt would have been invisible and looked like a freeze.
+  apt -y --reinstall install proxmox-widget-toolkit &>/dev/null || msg_error "Widget toolkit reinstall failed"
+
+  # FORK: the reinstall above restores the stock proxmoxlib.js, undoing the patch.
+  # Upstream relied on its APT hook to silently re-apply it here; we call the
+  # script directly instead. pve-remove-nag.sh is idempotent (it greps for
+  # NoMoreNagging and for the mobile marker before touching anything), so
+  # re-running this script never double-patches.
+  if [[ "$NAG_CHOICE" == "yes" ]]; then
+    msg_info "Disabling subscription nag"
+    /usr/local/bin/pve-remove-nag.sh &>/dev/null || msg_error "Nag patch failed"
+    msg_ok "Disabled subscription nag (Delete browser cache)"
+  fi
   if ! systemctl is-active --quiet pve-ha-lrm; then
     CHOICE=$(whiptail --backtitle "Proxmox VE Helper Scripts" --title "HIGH AVAILABILITY" --menu "Enable high availability?" 10 58 2 \
       "yes" " " \
