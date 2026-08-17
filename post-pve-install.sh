@@ -44,9 +44,14 @@ msg_error() {
   echo -e "${BFR} ${CROSS} ${RD}${msg}${CL}"
 }
 
-# Telemetry
-source <(curl -fsSL https://raw.githubusercontent.com/community-scripts/ProxmoxVE/main/misc/api.func) 2>/dev/null || true
-declare -f init_tool_telemetry &>/dev/null && init_tool_telemetry "post-pve-install" "pve"
+# FORK: telemetry removed.
+# Upstream sourced misc/api.func straight off the network and ran
+# init_tool_telemetry, which installed a `trap ... EXIT` handler that POSTs to
+# telemetry.community-scripts.org. The reporting itself was opt-in (it bails out
+# unless DIAGNOSTICS=yes in /usr/local/community-scripts/diagnostics), but the
+# `source <(curl ...)` executed ~1200 lines of unpinned remote code as root on
+# every run. Nothing else in this script uses api.func, so this is a pure
+# deletion with no functional impact.
 
 get_pve_version() {
   local pve_ver
