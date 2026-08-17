@@ -44,6 +44,25 @@ msg_error() {
   echo -e "${BFR} ${CROSS} ${RD}${msg}${CL}"
 }
 
+# FORK: preflight checks.
+# The original assumed it was run as root on a working PVE host and failed in
+# confusing ways otherwise (permission-denied halfway through rewriting
+# /etc/apt, or an unhandled `pveversion: command not found` under `set -e`).
+preflight() {
+  [[ "$(id -u)" -eq 0 ]] || {
+    msg_error "This script must be run as root"
+    exit 1
+  }
+  command -v pveversion &>/dev/null || {
+    msg_error "pveversion not found - this does not look like a Proxmox VE host"
+    exit 1
+  }
+  command -v whiptail &>/dev/null || {
+    msg_error "whiptail not found - install it with: apt install whiptail"
+    exit 1
+  }
+}
+
 # FORK: telemetry removed.
 # Upstream sourced misc/api.func straight off the network and ran
 # init_tool_telemetry, which installed a `trap ... EXIT` handler that POSTs to
@@ -72,6 +91,7 @@ component_exists_in_sources() {
 }
 
 main() {
+  preflight # FORK
   header_info
   echo -e "\nThis script will Perform Post Install Routines.\n"
   while true; do
