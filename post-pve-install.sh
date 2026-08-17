@@ -44,6 +44,18 @@ msg_error() {
   echo -e "${BFR} ${CROSS} ${RD}${msg}${CL}"
 }
 
+# FORK: report an aborted run instead of dying silently.
+# whiptail exits non-zero on ESC/Cancel. Every prompt here is a plain
+# `CHOICE=$(whiptail ...)` assignment, so under `set -e` that killed the script
+# mid-run with no output at all - leaving you unsure what had already been
+# applied. This handler only prints; no network, no side effects. Exit code 105
+# is the script's own "unsupported PVE version", which already prints its reason.
+_fork_on_exit() {
+  local ec=$?
+  ((ec == 0 || ec == 105)) || echo -e "\n ${CROSS} ${RD}Aborted (exit ${ec}). Steps already reported as done above were applied; nothing after that point ran.${CL}"
+  return 0
+}
+
 # FORK: preflight checks.
 # The original assumed it was run as root on a working PVE host and failed in
 # confusing ways otherwise (permission-denied halfway through rewriting
@@ -91,7 +103,8 @@ component_exists_in_sources() {
 }
 
 main() {
-  preflight # FORK
+  preflight                  # FORK
+  trap _fork_on_exit EXIT    # FORK: armed after preflight, which reports its own errors
   header_info
   echo -e "\nThis script will Perform Post Install Routines.\n"
   while true; do
