@@ -497,7 +497,16 @@ EOF
   fi
 
   # ---- CEPH ----
-  if component_exists_in_sources "no-subscription"; then
+  # FORK: detect the Ceph repo by URI instead of by component name.
+  # component_exists_in_sources "no-subscription" builds the regex
+  # \bno-subscription\b, and '-' is a word boundary, so it also matched
+  # 'pve-no-subscription'. Since proxmox.sources is created a few steps above in
+  # the same run, this branch always took the "already exists (skipped)" path and
+  # the Ceph question was never actually asked.
+  # The trailing /dev/null keeps grep off stdin when the glob expands to nothing
+  # (nullglob is set at the top of the script).
+  if grep -qhE '^[^#]*URIs:.*download\.proxmox\.com/debian/ceph' \
+    /etc/apt/sources.list.d/*.sources /dev/null 2>/dev/null; then
     msg_ok "'ceph' package repository (no-subscription) already exists (skipped)"
   else
     CHOICE=$(whiptail --backtitle "Proxmox VE Helper Scripts" --title "CEPH PACKAGE REPOSITORIES" \
