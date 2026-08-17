@@ -1,0 +1,5 @@
+# Shell scripts are executed on a Linux host — never let Git rewrite them to CRLF.
+*.sh    text eol=lf
+*.func  text eol=lf
+*.md    text eol=lf
+LICENSE text eol=lf
