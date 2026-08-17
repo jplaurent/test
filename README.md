@@ -14,7 +14,7 @@ Ce dépôt contient deux scripts :
 | Fichier | Rôle |
 |---|---|
 | `post-pve-install.sh` | Le fork fidèle à l'amont : interactif, portable PVE 8.x/9.x, ~700 lignes. La référence auditable. |
-| `pve9-postinstall-minimal.sh` | Équivalent de « oui à tout » pour **cette** machine, sans UI. 63 lignes dont 29 de shell. L'outil du quotidien. Voir [Variante minimale](#variante-minimale-non-interactive). |
+| `pve9-postinstall.sh` | Équivalent de « oui à tout » pour **cette** machine, sans UI, avec journal de console. L'outil du quotidien. Voir [Script non-interactif](#script-non-interactif). |
 
 ## Vérifier ce fork
 
@@ -117,22 +117,50 @@ apt update                                      # aucun avertissement
   possible. Non atteignable sur PVE 9. La ligne du M5 utilise l'idiome robuste `… *.sources /dev/null`.
 - **Branche 8.x** laissée telle quelle : la cible ici est PVE 9. Le M4 n'y est pas appliqué.
 
-## Variante minimale non-interactive
+## Script non-interactif
 
-`pve9-postinstall-minimal.sh` applique directement l'équivalent de « oui à tout », sur les specs réelles
-de la machine : **PVE 9 (trixie), nœud unique, pas de souscription, pas de Ceph**. Pas de whiptail, pas de
-couleurs, pas de fonctions. 63 lignes dont 29 de shell — le reste étant le bloc JS de l'UI mobile.
+`pve9-postinstall.sh` applique directement l'équivalent de « oui à tout », sur les specs réelles de la
+machine : **PVE 9 (trixie), nœud unique, pas de souscription, pas de Ceph**. Pas de whiptail. 161 lignes,
+dont ~20 de JS pour l'UI mobile et ~25 de journalisation.
 
 ```bash
 tar czf /root/etc-apt-$(date +%F).tgz /etc/apt     # sauvegarde
-scp pve9-postinstall-minimal.sh root@<pve>:/root/
-bash /root/pve9-postinstall-minimal.sh
+scp pve9-postinstall.sh root@<pve>:/root/
+bash /root/pve9-postinstall.sh
 ```
 
 Il fait 7 choses : désactive les dépôts `enterprise.proxmox.com` (`pve-enterprise.sources` **et**
-`ceph.sources`, en une boucle), ajoute `pve-no-subscription`, ajoute `contrib` à `debian.sources`,
-désactive HA et Corosync, met à jour, installe `amd64-microcode` + `firmware-amd-graphics`, puis retire le
-nag sur les deux UI. Il finit par un rappel — **pas** de reboot automatique.
+`ceph.sources`, en une boucle), écrit `pve-no-subscription`, garantit `contrib` + `non-free-firmware` sur
+`debian.sources`, désactive HA et Corosync, met à jour, installe le microcode et les firmwares **détectés
+via `lspci`**, puis retire le nag sur les deux UI. Il finit par un rappel — **pas** de reboot automatique.
+
+### Journal de console
+
+Chaque étape annonce ce qu'elle fait et distingue trois états, pour qu'un second lancement soit lisible :
+
+```
+==> Depots APT
+    ok   pve-enterprise.sources desactive
+    --   ceph.sources deja desactive
+    !!   1 fichier(s) .list legacy, NON touches - a revoir a la main :
+```
+
+`ok` = action appliquée, `--` = déjà en état, `!!` = avertissement (sur stderr). Un `trap ... ERR` signale
+la ligne fautive si le script s'arrête. Les couleurs se désactivent d'elles-mêmes hors terminal, donc
+`bash pve9-postinstall.sh | tee post.log` reste propre.
+
+### Garde-fous
+
+- **`VERSION_CODENAME=trixie` exigé.** Le script écrit `Suites: trixie` en dur ; l'exécuter sur un hôte
+  bookworm/PVE 8 basculerait les dépôts de base et enchaînerait une montée de version non supportée.
+- **Rien de destructif.** Aucun `rm`. Les `.list` legacy sont **signalés, pas supprimés** — c'est encore le
+  format de Docker, Tailscale et de plusieurs scripts communautaires. `/etc/apt/sources.list` est commenté
+  avec un `.bak` créé par `cp -n`, donc un second passage n'écrase pas la sauvegarde d'origine.
+- **Le patch du nag est vérifié après application.** Si le motif `data.status` est introuvable (format amont
+  modifié), le script avertit au lieu d'annoncer un succès. Voir la fragilité décrite ci-dessous.
+- **Une unité systemd absente n'interrompt pas le script** : elle est signalée et le reste s'applique.
+- **`lspci` décide des firmwares** plutôt qu'une supposition : `firmware-realtek` et `firmware-iwlwifi` ne
+  sont ajoutés que si le contrôleur correspondant est présent.
 
 ### Ce qui a été écarté par rapport à « oui à tout »
 
@@ -160,22 +188,43 @@ annule le patch. C'est la même cause que le piège décrit plus haut pour le fo
   refonte de cette UI les invaliderait silencieusement : le bloc cesserait d'agir sans rien casser.
 - Le nag revient après une mise à jour de `proxmox-widget-toolkit` ou `pve-yew-mobile-gui` — relancer le
   script, il est idempotent. C'est le prix choisi pour ne pas poser de hook APT.
+- **Le `sed` du nag dépend du retour à la ligne.** `s/!//` supprime le *premier* `!` de la ligne ; ça ne
+  fonctionne que parce que Proxmox met `!res` et `res.data.status… !== 'active'` sur des lignes séparées.
+  Si la condition était un jour reformatée sur une seule ligne, le `!` de `!res` serait mangé à la place et
+  la condition deviendrait toujours vraie — le bandeau réapparaîtrait. Défaillance bénigne, et le contrôle
+  post-patch l'affiche au lieu de la taire.
 - Écart volontaire vis-à-vis de l'amont : le `clearInterval` manquant a été ajouté. L'original coupe son
   `MutationObserver` au bout de 10 s mais laisse tourner un `setInterval(…, 300)` indéfiniment dans le
   navigateur.
 
 ### Idempotence — testée sur fixtures
 
-Les transformations ont été rejouées hors hôte contre une arborescence PVE 9 reconstituée
-(`debian.sources` en `main non-free-firmware`, `pve-enterprise.sources` et `ceph.sources` sur
-`enterprise.proxmox.com`, un `proxmoxlib.js` réaliste), en deux passages, sur trois variantes : nominale,
-`contrib` + `Enabled: true` déjà présents, et UI mobile absente. Résultat : second passage sans aucune
-modification, `Enabled: false` et `NoMoreNagging` en un seul exemplaire, `contrib` jamais dupliqué, et
-no-op propre quand `index.html.tpl` n'existe pas.
+Le script est **exécuté en entier** hors hôte, pas seulement relu. Le harnais dérive une copie du vrai
+fichier en préfixant les 4 variables de chemin déclarées en tête (`D`, `SL`, `WEB_JS`, `MOBILE_TPL`) et
+fournit des stubs pour `apt`, `systemctl`, `lspci` et `pveversion`. Un `diff` confirme que le harnais ne
+diverge du script que sur ces chemins — toute la logique testée est celle qui tournera sur l'hôte.
+
+Fixtures : arborescence PVE 9 reconstituée, avec un extrait **réel** de `src/Utils.js` récupéré depuis
+`git.proxmox.com` comme `proxmoxlib.js`. Cas couverts :
+
+| Cas | Attendu | Résultat |
+|---|---|---|
+| Passage 1 puis 2, nominal | `diff -r` vide au 2ᵈ passage, tout signalé « deja » | conforme |
+| `debian.sources` | `contrib` sur les 2 strophes, jamais dupliqué | conforme |
+| Dépôts enterprise | un seul `Enabled: false` par fichier | conforme |
+| `proxmoxlib.js` | `!== 'active'` → `== 'NoMoreNagging'` | conforme |
+| `sources.list` avec `deb` actifs, dont une ligne indentée | commentés, `.bak` = original | conforme |
+| `docker.list` présent | intact, signalé seulement | conforme |
+| `corosync` absent | avertissement, script poursuit | conforme |
+| Motif `data.status` introuvable | avertissement, pas de faux succès | conforme |
+| UI mobile absente | `--` propre, sans erreur | conforme |
+
+Non testable ici : le JS mobile lui-même (il dépend du DOM de l'UI mobile PVE) et le comportement réel
+d'`apt`/`systemctl`.
 
 ## À faire après le fork (spécifique à la machine)
 
-Inutile si tu as lancé `pve9-postinstall-minimal.sh`, qui s'en charge. Après le fork en revanche —
+Inutile si tu as lancé `pve9-postinstall.sh`, qui s'en charge. Après le fork en revanche —
 T-BAO R3 Pro, Ryzen 7 5700U, iGPU Vega :
 
 ```bash
