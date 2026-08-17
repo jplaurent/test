@@ -5,6 +5,23 @@
 # License: MIT
 # https://github.com/community-scripts/ProxmoxVE/raw/main/LICENSE
 
+# ------------------------------------------------------------------------------
+# FORK NOTICE
+#
+# Upstream : community-scripts/ProxmoxVE - tools/pve/post-pve-install.sh
+#            https://github.com/community-scripts/ProxmoxVE/blob/main/tools/pve/post-pve-install.sh
+# Pinned at: commit fb1d670158ba68a41397ce4f21c3b6444c1a76d4 (2026-08-06)
+#            md5 cb32f577bc9aeb730e447faa74e52732, 698 lines
+# Forked   : 2026-08-17
+#
+# The unmodified original lives in upstream/post-pve-install.sh. Review this fork
+# with:  diff -u upstream/post-pve-install.sh post-pve-install.sh
+# Every divergence is annotated with a "FORK:" comment. See README.md.
+#
+# Do not run this via `curl | bash` - that defeats the point. Copy it to the host
+# and run `bash ./post-pve-install.sh`.
+# ------------------------------------------------------------------------------
+
 header_info() {
   clear
   cat <<"EOF"
