@@ -282,23 +282,28 @@ start_routines_9() {
         sed -i '/proxmox/d;/bookworm/d' /etc/apt/sources.list
       fi
       # Create new deb822 sources
+      # FORK: non-free-firmware added to Components. Proxmox VE 9 ships
+      # `Components: main non-free-firmware` by default; upstream wrote
+      # `main contrib`, silently dropping the component that provides
+      # amd64-microcode and firmware-* packages (CPU microcode updates and iGPU
+      # firmware). contrib is kept because the helper scripts rely on it.
       cat >/etc/apt/sources.list.d/debian.sources <<EOF
 Types: deb
 URIs: http://deb.debian.org/debian
 Suites: trixie
-Components: main contrib
+Components: main contrib non-free-firmware
 Signed-By: /usr/share/keyrings/debian-archive-keyring.gpg
 
 Types: deb
 URIs: http://security.debian.org/debian-security
 Suites: trixie-security
-Components: main contrib
+Components: main contrib non-free-firmware
 Signed-By: /usr/share/keyrings/debian-archive-keyring.gpg
 
 Types: deb
 URIs: http://deb.debian.org/debian
 Suites: trixie-updates
-Components: main contrib
+Components: main contrib non-free-firmware
 Signed-By: /usr/share/keyrings/debian-archive-keyring.gpg
 EOF
       msg_ok "Corrected Proxmox VE 9 (Trixie) Sources"
