@@ -9,6 +9,13 @@ Objectif : pouvoir **lancer le script sans crainte** sur un hôte Proxmox VE per
 distant exécuté en root, pas de hook APT permanent, et une divergence assez faible pour être relue en
 entier d'un coup d'œil.
 
+Ce dépôt contient deux scripts :
+
+| Fichier | Rôle |
+|---|---|
+| `post-pve-install.sh` | Le fork fidèle à l'amont : interactif, portable PVE 8.x/9.x, ~700 lignes. La référence auditable. |
+| `pve9-postinstall-minimal.sh` | Équivalent de « oui à tout » pour **cette** machine, sans UI. 63 lignes dont 29 de shell. L'outil du quotidien. Voir [Variante minimale](#variante-minimale-non-interactive). |
+
 ## Vérifier ce fork
 
 `upstream/` contient les originaux **verbatim** et n'est jamais modifié. La revue se fait par diff :
@@ -110,9 +117,66 @@ apt update                                      # aucun avertissement
   possible. Non atteignable sur PVE 9. La ligne du M5 utilise l'idiome robuste `… *.sources /dev/null`.
 - **Branche 8.x** laissée telle quelle : la cible ici est PVE 9. Le M4 n'y est pas appliqué.
 
-## À faire après le script (spécifique à la machine)
+## Variante minimale non-interactive
 
-T-BAO R3 Pro — Ryzen 7 5700U, iGPU Vega :
+`pve9-postinstall-minimal.sh` applique directement l'équivalent de « oui à tout », sur les specs réelles
+de la machine : **PVE 9 (trixie), nœud unique, pas de souscription, pas de Ceph**. Pas de whiptail, pas de
+couleurs, pas de fonctions. 63 lignes dont 29 de shell — le reste étant le bloc JS de l'UI mobile.
+
+```bash
+tar czf /root/etc-apt-$(date +%F).tgz /etc/apt     # sauvegarde
+scp pve9-postinstall-minimal.sh root@<pve>:/root/
+bash /root/pve9-postinstall-minimal.sh
+```
+
+Il fait 7 choses : désactive les dépôts `enterprise.proxmox.com` (`pve-enterprise.sources` **et**
+`ceph.sources`, en une boucle), ajoute `pve-no-subscription`, ajoute `contrib` à `debian.sources`,
+désactive HA et Corosync, met à jour, installe `amd64-microcode` + `firmware-amd-graphics`, puis retire le
+nag sur les deux UI. Il finit par un rappel — **pas** de reboot automatique.
+
+### Ce qui a été écarté par rapport à « oui à tout »
+
+| Étape de l'original | Pourquoi écartée |
+|---|---|
+| Migration deb822 des sources | La branche est sautée dès qu'un `*.sources` existe — le cas sur une PVE 9 fraîche. Zéro effet. |
+| Dépôt Ceph no-subscription | Nœud unique sans Ceph : un dépôt de plus à interroger à chaque `apt update`, pour rien. |
+| Dépôt `pve-test` | L'original l'ajoute avec `Enabled: false` : un fichier sans aucun effet. |
+| `apt --reinstall proxmox-widget-toolkit` | Ne servait qu'à déclencher le hook APT, ou à restaurer le fichier si on répondait « non ». En répondant « oui », c'est du travail annulé aussitôt. |
+| « Activer HA » puis « désactiver HA » | L'original demande les deux successivement ; sur un nœud unique on désactive, point. |
+
+### Ordre imposé
+
+Les patches du nag sont **les dernières actions**, après le `dist-upgrade` : `proxmoxlib.js` appartient à
+`proxmox-widget-toolkit` et `index.html.tpl` à `pve-yew-mobile-gui`, donc toute mise à jour de ces paquets
+annule le patch. C'est la même cause que le piège décrit plus haut pour le fork.
+
+### Limites
+
+- La boucle de désactivation suppose des `.sources` **mono-strophe** — le cas de ceux que livre Proxmox.
+  Sur un fichier multi-strophes, `sed '/^Enabled:/d'` retirerait toutes les lignes `Enabled:`.
+- `trixie` et `pve-no-subscription` sont figés : script spécifique à PVE 9, par conception. Le fork reste
+  la version portable 8.x/9.x, d'où la garde `VERSION_CODENAME=trixie` en tête.
+- Les sélecteurs CSS du bloc mobile sont ceux de l'amont et dépendent du build de l'UI mobile PVE. Une
+  refonte de cette UI les invaliderait silencieusement : le bloc cesserait d'agir sans rien casser.
+- Le nag revient après une mise à jour de `proxmox-widget-toolkit` ou `pve-yew-mobile-gui` — relancer le
+  script, il est idempotent. C'est le prix choisi pour ne pas poser de hook APT.
+- Écart volontaire vis-à-vis de l'amont : le `clearInterval` manquant a été ajouté. L'original coupe son
+  `MutationObserver` au bout de 10 s mais laisse tourner un `setInterval(…, 300)` indéfiniment dans le
+  navigateur.
+
+### Idempotence — testée sur fixtures
+
+Les transformations ont été rejouées hors hôte contre une arborescence PVE 9 reconstituée
+(`debian.sources` en `main non-free-firmware`, `pve-enterprise.sources` et `ceph.sources` sur
+`enterprise.proxmox.com`, un `proxmoxlib.js` réaliste), en deux passages, sur trois variantes : nominale,
+`contrib` + `Enabled: true` déjà présents, et UI mobile absente. Résultat : second passage sans aucune
+modification, `Enabled: false` et `NoMoreNagging` en un seul exemplaire, `contrib` jamais dupliqué, et
+no-op propre quand `index.html.tpl` n'existe pas.
+
+## À faire après le fork (spécifique à la machine)
+
+Inutile si tu as lancé `pve9-postinstall-minimal.sh`, qui s'en charge. Après le fork en revanche —
+T-BAO R3 Pro, Ryzen 7 5700U, iGPU Vega :
 
 ```bash
 grep Components /etc/apt/sources.list.d/debian.sources   # doit contenir non-free-firmware
