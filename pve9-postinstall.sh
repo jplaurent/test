@@ -72,7 +72,10 @@ fi
 
 # Legacy : on commente sources.list (avec sauvegarde), on ne SUPPRIME aucun .list.
 if [[ -f $SL ]] && grep -qE '^\s*deb ' "$SL"; then
-  cp -n "$SL" "$SL.bak"
+  # Test explicite plutot que `cp -n` : le code de retour de -n quand la cible
+  # existe a varie selon les versions de coreutils, et sous set -e on ne veut
+  # pas en dependre. Ne jamais ecraser une sauvegarde deja presente.
+  [[ -e $SL.bak ]] || cp "$SL" "$SL.bak"
   sed -i '/^\s*deb /s/^/# /' "$SL"
   ok "entrees actives commentees dans $SL (sauvegarde $SL.bak)"
 fi
@@ -80,6 +83,14 @@ legacy=("$D"/*.list)
 if ((${#legacy[@]})); then
   warn "${#legacy[@]} fichier(s) .list legacy, NON touches - a revoir a la main :"
   printf '            %s\n' "${legacy[@]}" >&2
+fi
+
+# Hook APT laisse par un passage du script communautaire : signale, jamais retire.
+# Ce script n'en pose aucun ; si tu l'as installe volontairement, c'est ton choix.
+if [[ -e /etc/apt/apt.conf.d/no-nag-script ]]; then
+  warn "hook APT /etc/apt/apt.conf.d/no-nag-script present (pose par le script"
+  warn "communautaire). Il repatche le nag apres chaque operation dpkg."
+  warn "Pour le retirer : rm /etc/apt/apt.conf.d/no-nag-script"
 fi
 
 # ------------------------------------------------------------------ noeud seul
@@ -113,10 +124,13 @@ apt -y dist-upgrade
 # Le Replaces dit l'essentiel : ces blobs sont deja fournis par pve-firmware,
 # donc il n'y a rien a installer. amd64-microcode, lui, n'est pas en conflit.
 step "Microcode"
-if dpkg -s pve-firmware &>/dev/null; then
+# dpkg-query sur le Status, pas `dpkg -s` : ce dernier renvoie 0 aussi pour un
+# paquet retire dont les fichiers de conf subsistent (deinstall ok config-files),
+# ce qui donnerait un faux "present" sur le controle le plus important du script.
+if [[ $(dpkg-query -W -f='${Status}' pve-firmware 2>/dev/null) == 'install ok installed' ]]; then
   ok "pve-firmware present : blobs GPU / Wi-Fi / Ethernet deja fournis"
 else
-  warn "pve-firmware absent - installation Proxmox inhabituelle, a verifier a la main"
+  warn "pve-firmware non installe - installation Proxmox inhabituelle, a verifier a la main"
 fi
 apt -y install amd64-microcode
 

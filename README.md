@@ -11,7 +11,7 @@ de **community-scripts/ProxmoxVE**, dont l'original verbatim est conservé dans 
 
 | Fichier | Rôle |
 |---|---|
-| `pve9-postinstall.sh` | Le script. 167 lignes, dont ~20 de JS pour l'UI mobile et ~25 de journalisation. |
+| `pve9-postinstall.sh` | Le script. 181 lignes, dont ~20 de JS pour l'UI mobile et ~25 de journalisation. |
 | `upstream/post-pve-install.sh` | L'amont verbatim, épinglé sur [`fb1d670`](https://github.com/community-scripts/ProxmoxVE/commit/fb1d670158ba68a41397ce4f21c3b6444c1a76d4) (2026-08-06, md5 `cb32f577bc9aeb730e447faa74e52732`). Jamais exécuté, sert de référence. |
 | `upstream/api.func` | Le module de télémétrie de l'amont, archivé pour audit. Jamais exécuté. |
 
@@ -61,8 +61,11 @@ ligne fautive si le script s'arrête. Les couleurs se désactivent hors terminal
   bookworm/PVE 8 basculerait les dépôts de base et enchaînerait une montée de version non supportée.
 - **Rien de destructif. Aucun `rm`, et jamais d'`apt autoremove`** (voir plus bas pourquoi c'est la
   commande qui compte). Les `.list` legacy sont **signalés, pas supprimés** — c'est encore le format de
-  Docker, Tailscale et de plusieurs scripts communautaires. `/etc/apt/sources.list` est commenté avec un
-  `.bak` créé par `cp -n`, donc un second passage n'écrase pas la sauvegarde d'origine.
+  Docker, Tailscale et de plusieurs scripts communautaires. `/etc/apt/sources.list` est commenté après
+  création d'un `.bak`, sous test explicite `[[ -e $SL.bak ]] ||` — un second passage ne peut pas écraser la
+  sauvegarde d'origine.
+- **Un hook APT `no-nag-script` résiduel est signalé, pas retiré.** Si un passage du script communautaire en
+  a laissé un, tu es averti avec la commande pour l'enlever ; le choix reste le tien.
 - **Le patch du nag est vérifié après application.** Si le motif `data.status` est introuvable (format
   amont modifié), le script avertit au lieu d'annoncer un succès.
 - **Une unité systemd absente n'interrompt pas le script** : elle est signalée, le reste s'applique.
@@ -219,9 +222,57 @@ Fixtures : arborescence PVE 9 reconstituée, avec un extrait **réel** de `src/U
 | Motif `data.status` introuvable | avertissement, pas de faux succès | conforme |
 | UI mobile absente | `--` propre, sans erreur | conforme |
 | `pve-firmware` présent / absent | `ok` / `!!`, et jamais de paquet `firmware-*` Debian installé | conforme |
+| `pve-firmware` en état `deinstall ok config-files` | `!!`, pas de faux « présent » | conforme |
+| Hook APT `no-nag-script` résiduel | signalé, jamais retiré | conforme |
 
 Non testable hors hôte : le JS mobile lui-même (il dépend du DOM de l'UI mobile PVE) et le comportement
 réel d'`apt` et de `systemctl`.
+
+## Matériel spécifique — points à connaître
+
+Le script ne touche à aucun de ces points : ce sont des choses à savoir sur cette machine, à traiter
+seulement si le besoin apparaît.
+
+### Le NIC Intel I226-V a un défaut connu
+
+Les deux ports 2,5 GbE sont des **Intel I226-V** (pilote `igc`), pas du Realtek. Cette puce a un problème
+documenté de **coupures de lien aléatoires**, imputé à trois causes : l'Energy Efficient Ethernet (EEE),
+une gestion d'énergie PCIe (ASPM) trop agressive, et un firmware d'adaptateur périmé. Intel a reconnu le
+problème et publié une mise à jour **NVM** (firmware de la carte, distinct du pilote) comme correctif
+définitif ; désactiver l'EEE est le contournement côté système, et il n'est pas toujours suffisant.
+
+Sources : [Intel Community](https://community.intel.com/t5/Ethernet-Products/Intel-Communication-Intel-Ethernet-Controller-I226-Series-Random/m-p/1453177),
+[Intel I226-V is still randomly disconnecting](https://community.intel.com/t5/Ethernet-Products/Intel-I226-V-is-still-randomly-disconnecting/td-p/1630534),
+[AnandTech](https://at-web1.www.anandtech.com/show/18755/intel-shares-stopgap-solution-for-intermittent-connection-drops-on-700series-motherboards),
+[ComputingForGeeks](https://computingforgeeks.com/fix-intel-i226-nic-drops-opnsense/).
+
+**Ne change rien à l'avance.** Diagnostique d'abord, et seulement si tu observes des coupures :
+
+```bash
+journalctl -k | grep -i igc          # cherche des 'NIC Link is Down' repetes
+ethtool --show-eee enp1s0            # etat de l'EEE (adapte le nom d'interface)
+```
+
+Si l'EEE est actif et que le lien bat, désactive-le, puis rends-le persistant dans la strophe de
+l'interface concernée de `/etc/network/interfaces` (le port est esclave de `vmbr0`) :
+
+```
+post-up /usr/sbin/ethtool --set-eee enp1s0 eee off
+```
+
+`ethtool` n'est pas garanti installé — `apt install ethtool` au besoin.
+
+### Autres points
+
+- **Le microcode ne prend effet qu'au reboot** (chargé tôt via l'initramfs). Vérification après
+  redémarrage : `dmesg | grep -i microcode`. À noter qu'AMD publie surtout du microcode pour les gammes
+  serveur/desktop ; pour un APU mobile Lucienne il peut n'y avoir aucune révision à appliquer.
+- **iGPU Vega** : rien à installer, `pve-firmware` fournit les blobs `amdgpu`. Pour du transcodage en LXC,
+  vérifie simplement `ls -l /dev/dri`.
+- **Passthrough** (iGPU ou contrôleur disque vers une VM) : nécessite `amd_iommu=on iommu=pt` sur la ligne
+  de commande du noyau. Hors périmètre de ce script, à faire consciemment.
+- **Les deux baies 3,5" vides** sont la destination naturelle des sauvegardes `vzdump`. Un hôte cassé se
+  réinstalle ; des VM perdues ne reviennent pas.
 
 ## Contrôles sur l'hôte
 
