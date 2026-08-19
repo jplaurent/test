@@ -230,6 +230,26 @@ Fixtures : arborescence PVE 9 reconstituée, avec un extrait **réel** de `src/U
 Non testable hors hôte : le JS mobile lui-même (il dépend du DOM de l'UI mobile PVE) et le comportement
 réel d'`apt` et de `systemctl`.
 
+### Validé sur l'hôte réel (2026-08-19)
+
+- **Exécution complète réussie**, étape microcode incluse, après le correctif `firmware-*`. Le double
+  patch du nag (desktop et mobile) a été appliqué par le script lui-même.
+- **`shellcheck` ne remonte rien** sur `pve9-postinstall.sh` — aucune remarque, y compris au niveau
+  `style`, qui est la sévérité rapportée par défaut. C'est le dernier contrôle statique qui manquait.
+
+  Un `shellcheck` silencieux est un succès : il ne produit aucun message quand il n'a rien à dire. Pour
+  s'assurer qu'il a bien analysé quelque chose, un contrôle positif :
+
+  ```bash
+  printf '#!/bin/sh\nrm $1\n' > /tmp/sc-test.sh
+  shellcheck /tmp/sc-test.sh   # doit sortir un SC2086 et un code retour non nul
+  ```
+
+  Deux détails d'écriture y contribuent et ne doivent pas être « simplifiés » :
+  `trap '...$LINENO...' ERR` en **guillemets simples** (en doubles, `$LINENO` serait figé à la définition
+  du trap et désignerait la mauvaise ligne — `SC2064`), et `dpkg-query -W -f='${Status}'` de même (en
+  doubles, bash tenterait d'expandre `${Status}` et `set -u` ferait échouer le script).
+
 ## Matériel spécifique — points à connaître
 
 Le script ne touche à aucun de ces points : ce sont des choses à savoir sur cette machine, à traiter
