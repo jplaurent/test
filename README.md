@@ -3,7 +3,9 @@
 Script de post-installation pour un hôte **Proxmox VE 9** personnel : nœud unique, sans souscription,
 sans Ceph. Non-interactif, idempotent, et il ne supprime jamais rien.
 
-Machine cible : T-BAO R3 Pro — Ryzen 7 5700U (iGPU Vega), 32 Go, SSD 1 To, 2× 2.5 GbE.
+Machine cible : T-BAO R3 Pro — Ryzen 7 5700U (iGPU Vega), 32 Go, NVMe 1 To, 2× 2,5 GbE **Intel I226-V**
+(interfaces `nic0`/`nic1`), Wi-Fi 6 AX200. Racine en ext4 sur LVM. Voir
+[État constaté sur l'hôte](#état-constaté-sur-lhôte-2026-08-19).
 
 Le point de départ était [`tools/pve/post-pve-install.sh`](https://github.com/community-scripts/ProxmoxVE/blob/main/tools/pve/post-pve-install.sh)
 de **community-scripts/ProxmoxVE**, dont l'original verbatim est conservé dans [`upstream/`](upstream/)
@@ -246,33 +248,62 @@ Sources : [Intel Community](https://community.intel.com/t5/Ethernet-Products/Int
 [AnandTech](https://at-web1.www.anandtech.com/show/18755/intel-shares-stopgap-solution-for-intermittent-connection-drops-on-700series-motherboards),
 [ComputingForGeeks](https://computingforgeeks.com/fix-intel-i226-nic-drops-opnsense/).
 
-**Ne change rien à l'avance.** Diagnostique d'abord, et seulement si tu observes des coupures :
+**Vérifié le 2026-08-19 : 0 coupure de lien sur 7 jours. Le défaut ne se manifeste pas sur cet
+exemplaire — ne change rien.** Cette section reste ici comme référence si la situation évolue.
+
+Attention au nommage : sur cette machine les interfaces sont **`nic0` et `nic1`**, pas `enp1s0`.
 
 ```bash
-journalctl -k | grep -i igc          # cherche des 'NIC Link is Down' repetes
-ethtool --show-eee enp1s0            # etat de l'EEE (adapte le nom d'interface)
+journalctl -k --since "7 days ago" | grep -ciE 'link is down|nic link is down'
+ethtool --show-eee nic0     # ethtool n'est pas installe par defaut : apt install ethtool
 ```
 
-Si l'EEE est actif et que le lien bat, désactive-le, puis rends-le persistant dans la strophe de
-l'interface concernée de `/etc/network/interfaces` (le port est esclave de `vmbr0`) :
+Si un jour le lien se met à battre et que l'EEE est actif, désactive-le puis rends-le persistant dans la
+strophe de l'interface concernée de `/etc/network/interfaces` (le port est esclave de `vmbr0`) :
 
 ```
-post-up /usr/sbin/ethtool --set-eee enp1s0 eee off
+post-up /usr/sbin/ethtool --set-eee nic0 eee off
 ```
 
-`ethtool` n'est pas garanti installé — `apt install ethtool` au besoin.
+Le correctif définitif reste la mise à jour NVM publiée par Intel, pas ce contournement.
 
 ### Autres points
 
-- **Le microcode ne prend effet qu'au reboot** (chargé tôt via l'initramfs). Vérification après
-  redémarrage : `dmesg | grep -i microcode`. À noter qu'AMD publie surtout du microcode pour les gammes
-  serveur/desktop ; pour un APU mobile Lucienne il peut n'y avoir aucune révision à appliquer.
-- **iGPU Vega** : rien à installer, `pve-firmware` fournit les blobs `amdgpu`. Pour du transcodage en LXC,
-  vérifie simplement `ls -l /dev/dri`.
-- **Passthrough** (iGPU ou contrôleur disque vers une VM) : nécessite `amd_iommu=on iommu=pt` sur la ligne
-  de commande du noyau. Hors périmètre de ce script, à faire consciemment.
+- **Le microcode est appliqué et fonctionne.** Vérifié : `microcode: Updated early from: 0x08608103` →
+  `Current revision: 0x08608108`. Contrairement à une réserve émise plus tôt dans ce dépôt, AMD publie bien
+  une révision pour ce 5700U, et elle est chargée tôt via l'initramfs. Contrôle :
+  `dmesg | grep -i microcode`. Ne prend effet qu'après un redémarrage suivant l'installation.
+- **iGPU Vega : opérationnel.** `amdgpu` est attaché, `/dev/dri/card0` et `/dev/dri/renderD128` sont
+  présents. Rien à installer — `pve-firmware` fournit les blobs. Pour du transcodage matériel en LXC,
+  passer `/dev/dri/renderD128` au conteneur.
+- **Passthrough** (iGPU ou contrôleur disque vers une VM) : la ligne de commande du noyau ne contient
+  actuellement que `root=... ro quiet`. Il faudrait ajouter `amd_iommu=on iommu=pt`. Hors périmètre de ce
+  script, à faire consciemment.
+- **`Acquire::Check-Valid-Until "false"`** est positionné dans `/etc/apt/apt.conf.d/99mmdebstrap`, hérité du
+  bootstrap de l'image. Ça désactive le contrôle de fraîcheur des métadonnées de dépôt : un miroir
+  compromis ou figé peut resservir d'anciennes métadonnées et masquer des mises à jour de sécurité
+  (attaque par gel). D'autant que `debian.sources` tape en `http://`. À retirer :
+  `sed -i '/Check-Valid-Until/d' /etc/apt/apt.conf.d/99mmdebstrap` puis `apt update`.
 - **Les deux baies 3,5" vides** sont la destination naturelle des sauvegardes `vzdump`. Un hôte cassé se
   réinstalle ; des VM perdues ne reviennent pas.
+
+### État constaté sur l'hôte (2026-08-19)
+
+Audit après le premier passage du script. Tout est conforme.
+
+| | |
+|---|---|
+| Version | `pve-manager/9.2.11`, noyau `7.0.14-12-pve` |
+| Racine | **ext4 sur LVM** (`/dev/mapper/pve-root`), 94 Go dont 84 libres. Pas de ZFS → pas de réglage d'ARC à prévoir. |
+| `/boot` | sur la racine, pas de partition dédiée → aucun risque de saturation par accumulation de noyaux |
+| Noyaux | `7.0.14-12-pve` (courant) + `7.0.2-6-pve` (repli GRUB). Aucun redémarrage en attente. C'est ce repli qu'`apt autoremove` supprimerait. |
+| Disques | un seul NVMe de 954 Go ; les deux baies 3,5" sont vides |
+| Dépôts | enterprise et ceph-squid en `Enabled: false`, `pve-no-subscription` actif, `main contrib non-free-firmware` sur les deux strophes Debian, aucun `.list` legacy, 0 ligne active dans `sources.list` |
+| Microcode | `amd64-microcode` fourni par le dépôt **Proxmox** lui-même (`~bpo13+1`), pas par un backports Debian tiers |
+| HA | `pve-ha-lrm`, `pve-ha-crm`, `corosync` : `disabled` |
+| Nag | desktop et mobile patchés (`NoMoreNagging` × 1 chacun) |
+| Hooks APT | `10pveapthook` présent (garde-fou officiel actif), **aucun** `no-nag-script` |
+| `linux-image-amd64` | non installé — pas de conflit avec les noyaux PVE |
 
 ## Contrôles sur l'hôte
 
