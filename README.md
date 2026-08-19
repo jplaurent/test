@@ -11,7 +11,7 @@ de **community-scripts/ProxmoxVE**, dont l'original verbatim est conservé dans 
 
 | Fichier | Rôle |
 |---|---|
-| `pve9-postinstall.sh` | Le script. 161 lignes, dont ~20 de JS pour l'UI mobile et ~25 de journalisation. |
+| `pve9-postinstall.sh` | Le script. 167 lignes, dont ~20 de JS pour l'UI mobile et ~25 de journalisation. |
 | `upstream/post-pve-install.sh` | L'amont verbatim, épinglé sur [`fb1d670`](https://github.com/community-scripts/ProxmoxVE/commit/fb1d670158ba68a41397ce4f21c3b6444c1a76d4) (2026-08-06, md5 `cb32f577bc9aeb730e447faa74e52732`). Jamais exécuté, sert de référence. |
 | `upstream/api.func` | Le module de télémétrie de l'amont, archivé pour audit. Jamais exécuté. |
 
@@ -35,7 +35,7 @@ Sept actions, dans cet ordre :
 3. Garantit `contrib` **et** `non-free-firmware` sur chaque ligne `Components:` de `debian.sources`.
 4. Désactive HA et Corosync (nœud unique).
 5. `apt update` puis `apt -y dist-upgrade`.
-6. Installe le microcode et les firmwares **détectés via `lspci`**.
+6. Installe `amd64-microcode`. **Aucun paquet `firmware-*` de Debian** — voir ci-dessous.
 7. Retire le bandeau de souscription sur les deux UI, desktop et mobile.
 
 Il finit par un rappel. **Pas de reboot automatique.**
@@ -66,8 +66,31 @@ ligne fautive si le script s'arrête. Les couleurs se désactivent hors terminal
 - **Le patch du nag est vérifié après application.** Si le motif `data.status` est introuvable (format
   amont modifié), le script avertit au lieu d'annoncer un succès.
 - **Une unité systemd absente n'interrompt pas le script** : elle est signalée, le reste s'applique.
-- **`lspci` décide des firmwares** plutôt qu'une supposition : `firmware-realtek` et `firmware-iwlwifi` ne
-  sont ajoutés que si le contrôleur correspondant est présent.
+- **Aucun paquet `firmware-*` de Debian n'est installé** — voir la section suivante, c'est le piège le plus
+  sérieux rencontré sur ce script.
+
+### Ne jamais installer les paquets `firmware-*` de Debian
+
+Erreur commise puis corrigée dans ce dépôt, elle vaut d'être documentée. `pve-firmware` déclare
+**`Conflicts:` et `Replaces:`** sur `firmware-amd-graphics`, `firmware-iwlwifi`, `firmware-realtek` et une
+vingtaine d'autres (voir `debian/control` de `pve-firmware.git`). Installer l'un d'eux fait résoudre le
+conflit à apt en **retirant `pve-firmware`**, dont dépend le noyau Proxmox :
+
+```
+REMOVING: proxmox-default-kernel
+W: (pve-apt-hook) You are attempting to remove the meta-package 'proxmox-ve'!
+Error: Sub-process /usr/share/proxmox-ve/pve-apt-hook returned an error code (1)
+```
+
+Le `pve-apt-hook` avorte la transaction avant tout changement, donc rien n'est cassé — mais l'étape échoue
+et, `set -e` aidant, le script s'arrête là.
+
+Le `Replaces:` dit l'essentiel : **ces blobs sont déjà installés**, fournis par `pve-firmware`. Il n'y a
+rien à ajouter pour l'iGPU Vega ni pour le Wi-Fi. Le script se contente donc de vérifier la présence de
+`pve-firmware` et d'installer `amd64-microcode`, qui n'est pas dans la liste de conflits.
+
+Et si tu croises ce message un jour : **ne fais pas `touch /please-remove-proxmox-ve`.** C'est la porte de
+sortie prévue pour désinstaller Proxmox volontairement, pas un contournement.
 
 ## Relancer le script
 
@@ -178,7 +201,7 @@ Comme `proxmox.sources` est créé quelques étapes plus haut dans la même exé
 
 Le script est **exécuté en entier** hors hôte, pas seulement relu. Le harnais dérive une copie du vrai
 fichier en préfixant les 4 variables de chemin déclarées en tête (`D`, `SL`, `WEB_JS`, `MOBILE_TPL`) et
-fournit des stubs pour `apt`, `systemctl`, `lspci` et `pveversion`. Un `diff` confirme que le harnais ne
+fournit des stubs pour `apt`, `systemctl`, `dpkg` et `pveversion`. Un `diff` confirme que le harnais ne
 diverge du script que sur ces chemins — toute la logique testée est celle qui tournera sur l'hôte.
 
 Fixtures : arborescence PVE 9 reconstituée, avec un extrait **réel** de `src/Utils.js` récupéré depuis
@@ -195,6 +218,7 @@ Fixtures : arborescence PVE 9 reconstituée, avec un extrait **réel** de `src/U
 | `corosync` absent | avertissement, script poursuit | conforme |
 | Motif `data.status` introuvable | avertissement, pas de faux succès | conforme |
 | UI mobile absente | `--` propre, sans erreur | conforme |
+| `pve-firmware` présent / absent | `ok` / `!!`, et jamais de paquet `firmware-*` Debian installé | conforme |
 
 Non testable hors hôte : le JS mobile lui-même (il dépend du DOM de l'UI mobile PVE) et le comportement
 réel d'`apt` et de `systemctl`.
