@@ -279,11 +279,25 @@ Le correctif définitif reste la mise à jour NVM publiée par Intel, pas ce con
 - **Passthrough** (iGPU ou contrôleur disque vers une VM) : la ligne de commande du noyau ne contient
   actuellement que `root=... ro quiet`. Il faudrait ajouter `amd_iommu=on iommu=pt`. Hors périmètre de ce
   script, à faire consciemment.
-- **`Acquire::Check-Valid-Until "false"`** est positionné dans `/etc/apt/apt.conf.d/99mmdebstrap`, hérité du
-  bootstrap de l'image. Ça désactive le contrôle de fraîcheur des métadonnées de dépôt : un miroir
-  compromis ou figé peut resservir d'anciennes métadonnées et masquer des mises à jour de sécurité
-  (attaque par gel). D'autant que `debian.sources` tape en `http://`. À retirer :
-  `sed -i '/Check-Valid-Until/d' /etc/apt/apt.conf.d/99mmdebstrap` puis `apt update`.
+- **`Acquire::Check-Valid-Until "false"`** est positionné dans `/etc/apt/apt.conf.d/99mmdebstrap`. Ce
+  fichier vient de **l'installeur Proxmox VE 9 officiel** (installation depuis l'ISO), qui bootstrape avec
+  `mmdebstrap` — ce n'est donc pas un résidu étranger.
+
+  Le réglage a du sens *pendant* l'installation : les métadonnées embarquées dans l'ISO sont forcément
+  périmées au regard de leur `Valid-Until` le jour où on installe. Ce qui est moins clair, c'est s'il est
+  volontairement destiné à rester actif ensuite. Laissé en place, il désactive le contrôle de fraîcheur des
+  métadonnées de dépôt : un miroir figé ou compromis peut resservir d'anciennes métadonnées et masquer des
+  mises à jour de sécurité (attaque par gel). D'autant que `debian.sources` tape en `http://`.
+
+  Le retirer est peu risqué et restaure une protection par défaut, mais c'est un écart vis-à-vis d'un
+  fichier livré par l'éditeur — donc un choix conscient, pas une correction évidente :
+
+  ```bash
+  dpkg -S /etc/apt/apt.conf.d/99mmdebstrap   # si aucun paquet ne le possede, rien ne le restaurera
+  cp /etc/apt/apt.conf.d/99mmdebstrap /root/99mmdebstrap.bak
+  sed -i '/Check-Valid-Until/d' /etc/apt/apt.conf.d/99mmdebstrap
+  apt update
+  ```
 - **Les deux baies 3,5" vides** sont la destination naturelle des sauvegardes `vzdump`. Un hôte cassé se
   réinstalle ; des VM perdues ne reviennent pas.
 
